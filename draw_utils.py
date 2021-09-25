@@ -32,6 +32,8 @@ COLOR_FILE_VIEWER_FONT = (10, 10, 10)
 get_ticks = pygame.time.get_ticks
 
 def get_casting_point(self, wall):
+    # the raycasting code by Emc2356
+    # https://github.com/Emc2356/Visualizations/blob/main/RayCasting.py
     x1 = wall.a.x
     y1 = wall.a.y
     x2 = wall.b.x
