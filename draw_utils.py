@@ -1,0 +1,272 @@
+import os
+
+os.environ['PYGAME_HIDE_SUPPORT_PROMPT'] = "hide"
+import math
+
+import pygame
+import numpy as np
+
+_pi = math.pi
+_pi_2 = math.pi * 2 
+
+
+SHADE_TINT = 0.3
+LIGHT_TINT = 0.2
+FOREGROUND_DARK_TINT = 0.5
+
+COLOR_BACKGROUND = (90, 87, 85)
+COLOR_GRID = (120, 120, 120)
+COLOR_GRID_CELL = (140, 140, 140)
+COLOR_DEFAULT = (110, 100, 100)
+COLOR_TRASPARENT = (110, 110, 120)
+COLOR_BORDER = (230, 220, 230)
+COLOR_FOREGROUND = (152, 168, 152)    
+COLOR_FOREGROUND_LIGHT = (193, 214, 193)
+COLOR_FOREGROUND_DARK = (113, 124, 113)
+COLOR_WHITE = (255, 255, 255)
+COLOR_BLACK = (0, 0, 0)
+COLOR_FILE_SELECTION = (22, 12, 33)
+COLOR_FILE_VIEWER = (215, 214, 212)
+COLOR_FILE_VIEWER_FONT = (10, 10, 10)
+
+get_ticks = pygame.time.get_ticks
+
+def get_casting_point(self, wall):
+    x1 = wall.a.x
+    y1 = wall.a.y
+    x2 = wall.b.x
+    y2 = wall.b.y
+
+    x3 = self.pos.x
+    y3 = self.pos.y
+    x4 = self.pos.x + self.dir.x
+    y4 = self.pos.y + self.dir.y
+
+    den = (x1 - x2) * (y3 - y4) - (y1 - y2) * (x3 - x4)
+    if den == 0:  # line are parallel and they will never meet even if you stretch them out infinitely
+        return
+
+    t = ((x1 - x3) * (y3 - y4) - (y1 - y3) * (x3 - x4)) / den
+    u = -((x1 - x2) * (y1 - y3) - (y1 - y2) * (x1 - x3)) / den
+    if t > 0 and t < 1 and u > 0:
+        return pygame.math.Vector2(
+            x1 + t * (x2 - x1),
+            y1 + t * (y2 - y1)
+        )
+    else:
+        return
+
+# def intersect(line_1, line_2):
+#     x3, y3, x4, y4 = self.pos.x, self.pos.y, self.pos.x + self.dir.x, self.pos.y + self.dir.y
+#     x1, y1, x2, y2 = wall.a.x, wall.a.y, wall.b.x, wall.b.y
+#     if den == 0:  # line are parallel and they will never meet even if you stretch them out infinitely
+#         continue
+#     t = ((x1 - x3) * (y3 - y4) - (y1 - y3) * (x3 - x4)) / den
+#     u = -((x1 - x2) * (y1 - y3) - (y1 - y2) * (x1 - x3)) / den
+
+#     # if you want for 2 line segements you need to do u > 0 and u < 1 the u > 0 is for infinitely long line
+#     if t > 0 and t < 1 and u > 0:
+#         intersect_point = pygame.math.Vector2(x1 + t * (x2 - x1), y1 + t * (y2 - y1))
+
+def make_matrix(roll, pitch, heading, x0, y0, z0):
+    a = math.radians(roll)
+    b = math.radians(pitch)
+    g = math.radians(heading)
+
+    T = np.array([[ math.cos(b)*math.cos(g), (math.sin(a)*math.sin(b)*math.cos(g) + 
+                math.cos(a)*math.sin(g)), (math.sin(a)*math.sin(g) - 
+                math.cos(a)*math.sin(b)*math.cos(g)), x0],
+                [-math.cos(b)*math.sin(g), (math.cos(a)*math.cos(g) - 
+                math.sin(a)*math.sin(b)*math.sin(g)), (math.sin(a)*math.cos(g) + 
+                math.cos(a)*math.sin(b)*math.sin(g)), y0],
+                    [        math.sin(b), -math.sin(a)*math.cos(b), math.cos(a)*math.cos(b), z0],
+                    [ 0, 0, 0, 1]])
+    return T
+
+
+def project25d(wx, wy, wz, win_width, win_height, fov=90.0, viewer_distance=0):
+    """ Transforms this 3D point to 2D using a perspective projection. """    
+    factor = fov / (viewer_distance + wz)
+    
+    x = wx * factor + win_width / 2
+    y = wy * factor + win_height / 2
+    
+    return int(x), int(y)    
+
+def project25dAlt(wx, wy, wz, win_width, win_height, worldScale = 1.0):
+    """ Project 3d coords into 2d plane (screen)
+    """    
+    ## I used the idea and the algorythm at: 
+    ##   http://www.inversereality.org/tutorials/graphics%20programming/3dprojection.html    
+    if wz == 0:
+        OneOverZ = 0
+    else:
+        OneOverZ = 1.0 / float(wz)    
+    
+    sx = (wx * worldScale * OneOverZ) + win_width / 2
+    sy = (wy * worldScale * OneOverZ) + win_height / 2
+    
+    return int(sx), int(sy)    
+
+def clip(val, n, m):
+    return min(m, max(n, val))
+
+def to_pygame_y(y, screen_height=600):
+    return -y + screen_height
+
+def to_pymunk_y(y, screen_height=600):
+    return screen_height - y
+
+def measure_angle(x, y):
+    return 180 - math.degrees( math.arctan2(x, y) )
+
+def measure_angle_xy(point1, point2):
+    x1, y1 = point1
+    x2, y2 = point2
+    return 180 - math.degrees( math.atan2(x2 - x1, y2 - y1) )    
+
+def rotate(vector_length, angle):
+    new_x = vector_length * math.cos(math.radians(angle))
+    new_y = vector_length * math.sin(math.radians(angle))
+    return (new_x, new_y)
+
+def pivot_rotation(surf, pivot_x, pivot_y, angle):
+    """ rotate pygame surface surf along specified pivot
+    """
+    sprite_w, sprite_h = surf.get_size()
+    centerx = 0
+    centery = 0
+    
+    pivot_c_x = pivot_x - sprite_w // 2
+    pivot_c_y = pivot_y - sprite_h // 2    
+
+    new_center_x = centerx + pivot_c_x
+    new_center_y = centery + pivot_c_y
+    
+    c_off_x, c_off_y = rotate(pivot_c_x, angle)
+    
+    new_center_x += c_off_x
+    new_center_y += c_off_y
+    
+    muzzle = pygame.transform.rotate(surf, 180-angle)
+    m_size = muzzle.get_size()
+    new_x = new_center_x - m_size[0]//2 - pivot_c_x
+    new_y = new_center_y - m_size[1]//2 - pivot_c_y
+
+    return new_x, new_y, muzzle    
+
+def darker(color, amount):
+    if isinstance(amount, int):
+        return tuple(clip((c-amount), 0, 255) for c in color)
+    elif isinstance(amount, float):
+        return tuple(clip(int(c - c*amount), 0, 255) for c in color)
+    raise ValueError("amount should be int or float")
+
+def brighter(color, amount):
+    if isinstance(amount, int):
+        return tuple(clip(c+amount,0,255) for c in color)
+    elif isinstance(amount, float):
+        return tuple(clip(int(c + c*amount),0,255) for c in color)
+    raise ValueError("amount should be int or float")
+
+def pulse(range_, freq, shift=0.0):
+    secs = math.degrees(shift * _pi_2) + 90 - (((get_ticks()%1000)/2.77)*freq) % 360
+    return (1 - math.sin( math.radians(secs) ) ) * range_/2
+
+def draw_line2(surf, coord1, coord2, xoff=0, yoff=0):
+    x1, y1 = coord1
+    x2, y2 = coord2
+    pygame.draw.line(surf, (244, 233, 254), (x1+xoff, y1+yoff), (x2+xoff, y2+yoff)) 
+    pygame.draw.circle(surf, (244, 233, 254), (x1+xoff, y1+yoff), 2)
+
+def blur(a):
+    """ experimental, blurs an numpy array a """
+    kernel = np.array([[1.0,2.0,1.0], [2.0,4.0,2.0], [1.0,2.0,1.0]])
+    kernel = kernel / np.sum(kernel)
+    arraylist = []
+    for y in range(3):
+        temparray = np.copy(a)
+        temparray = np.roll(temparray, y - 1, axis=0)
+        for x in range(3):
+            temparray_X = np.copy(temparray)
+            temparray_X = np.roll(temparray_X, x - 1, axis=1)*kernel[y,x]
+            arraylist.append(temparray_X)
+    arraylist = np.array(arraylist)
+    arraylist_sum = np.sum(arraylist, axis=0)
+    return arraylist_sum    
+
+def draw_shaded_frame(surf, x, y, width, height, shade_color=None, light_color=None, mode=0):
+    """ draw a shaded frame (no middle)
+        used to draw many controls
+    """
+    if shade_color is None:
+        shade_color = COLOR_FOREGROUND_DARK
+    if light_color is None:
+        light_color = COLOR_FOREGROUND_LIGHT
+    right = width + x
+    bottom = height + y
+    if mode & 1: 
+        shade_color, light_color = light_color, shade_color
+    pygame.draw.line(surf, light_color, (x+1, y), (right, y))
+    pygame.draw.line(surf, darker(light_color, 0.1), (right, y), (right, bottom-1))
+    pygame.draw.line(surf, shade_color, (x, bottom), (right-1, bottom))
+    pygame.draw.line(surf, darker(shade_color, 0.1), (x, y+1), (x, bottom))
+
+    if mode & 1:
+        pygame.draw.line(surf, brighter(light_color, 0.25), (x, y), (x, y))
+        pygame.draw.line(surf, brighter(light_color, 0.3), (right, bottom), (right, bottom))        
+    else:
+        pygame.draw.line(surf, darker(light_color, 0.25), (x, y), (x, y))
+        pygame.draw.line(surf, darker(light_color, 0.3), (right, bottom), (right, bottom))
+
+def draw_panel(surf, x, y, width, height, color, shade_color=None, light_color=None, mode=0, no_middle=False):
+    if shade_color is None:
+        shade_color = darker(color, SHADE_TINT)
+    if light_color is None:
+        light_color = brighter(color, LIGHT_TINT)
+    if mode & 2:
+        color = darker(color, FOREGROUND_DARK_TINT)
+    if not no_middle:
+        pygame.draw.rect(surf, color, (x, y, width, height))    
+    draw_shaded_frame(surf, x, y, width, height, shade_color, light_color, mode=mode)    
+
+def flood_fill(surf, f_x, f_y, color):
+    """ fill surface surf with specified color at f_x, f_y
+    """
+    pixels = pygame.PixelArray(surf)
+    width, height = surf.get_size()
+
+    test_color = pixels[f_x, f_y]
+
+    color = pygame.Color(color)
+    color = (color.r, color.g, color.b)
+        
+    stack = []        
+    stack.append((f_x, f_y))
+    
+    while len(stack):            
+        x, y = stack.pop()
+            
+        if x < 0 or y < 0 or x >= width or y >= height:
+            continue
+
+        c_color = pixels[x, y]
+        if pygame.Color(c_color)[1:]==color:
+            continue
+
+        if test_color==c_color:            
+            pixels[x, y] = color
+        else:
+            continue
+
+        stack.append((x + 1, y))   # right
+        stack.append(( x - 1, y))  # left
+        stack.append(( x, y + 1))  # down
+        stack.append(( x, y - 1))  # up         
+
+def test():
+    pulse(5,15)      
+
+if __name__ == '__main__':
+    import timeit
+    print(timeit.timeit("test()", globals=globals(), number=100000))        
