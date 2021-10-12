@@ -17,8 +17,8 @@ class App():
     (MODE_PLAY, MODE_EDIT) = range(1, 3)    
     DOUBLECLICK_DELAY = 250 # ms
 
-    def __init__(self, title=None, screen_size=(640, 480), fps=60, dpi_aware=False, resizeable=False, vsync=True):
-        self._screen_size=screen_size
+    def __init__(self, title=None, window_res=(640, 480), fps=60, dpi_aware=False, resizeable=False, vsync=True):
+        self._window_res = window_res
         self._title = title
         self._fps = fps
         self._dpi_aware = dpi_aware
@@ -35,7 +35,7 @@ class App():
         self._on_post_draw_cb = None
         self._on_event_cb = None
         self._on_pre_draw_cb = None
-        self._post_init_cb = None
+        self._on_init_cb = None
         self._on_quit_cb = None #return false to postpone quit
 
         self._controls = Layout() # controls that are directly attached to the application
@@ -46,6 +46,7 @@ class App():
         self._last_mouse_click_pos = (0, 0)
         self._last_mouse_click_ticks = 0
         self._last_mouse_click_button = pygame.BUTTON_LEFT
+        self._scaled_fullscreen = False
 
         self._pushed_btn = None
         self._shadow_offset = 6
@@ -56,7 +57,7 @@ class App():
         self._unsettling_events = frozenset([ pygame.KEYDOWN, pygame.MOUSEBUTTONDOWN, pygame.MOUSEMOTION, pygame.MOUSEBUTTONUP ])
                 
     def __setattr__(self, name, value):
-        """ setting app attribe with a controlo causes it to be added to application
+        """ setting app attribute with a control causes it to be added to the app
             Note that it will add that control to the default layout unless a control
             already has a layout
         """
@@ -79,25 +80,26 @@ class App():
 
     @property
     def screen_size(self):
-        return self._screen_size
+        return self._screen.get_size()
     @property
     def screen_width(self):
-        return self._screen_size[0]
+        return self._screen.get_width()
     @property
     def screen_height(self):
-        return self._screen_size[1]        
+        return self._screen.get_height()   
     
     def on_event(self, f_cb):
         self._on_event_cb = types.MethodType(f_cb, self)
     on_event = property(fset=on_event)
 
-    def post_init(self, f_cb):
-        self._post_init_cb = types.MethodType(f_cb, self)
-    post_init = property(fset=post_init)    
+    def on_init(self, f_cb):
+        self._on_init_cb = types.MethodType(f_cb, self)
+    on_init = property(fset=on_init)    
 
-    def on_pre_draw(self, f_cb):
+    def on_gui_draw(self, f_cb):
+        """ Drawn before gui is drawn """
         self._on_pre_draw_cb = types.MethodType(f_cb, self)
-    on_pre_draw = property(fset=on_pre_draw) #write only
+    on_gui_draw = property(fset=on_gui_draw)
 
     def on_draw(self, f_cb):
         """ set on draw callback """
@@ -105,7 +107,9 @@ class App():
     on_draw = property(fset=on_draw) #write only
 
     def on_quit(self, f_cb):
-        """ set on quit callback """
+        """ set on quit callback
+            Note: return False to postpone quitting
+        """
         self._on_quit_cb = types.MethodType(f_cb, self)
     on_quit = property(fset=on_quit)
 
@@ -136,24 +140,46 @@ class App():
         event = self._events[event_id]
         pygame.time.set_timer(event_id, 0)
 
+
+    def toggle_scaled_fullscreen(self):    
+        if self._scaled_fullscreen:
+            self._exit_scaled_fullscreen()
+        else:
+            self._go_scaled_fullscreen()
+
     @property
     def anim_timer(self):
         return self._anim_timer
+        
 
     @property
     def controls(self):
         return self._controls
 
+    def _go_scaled_fullscreen(self):
+        #fullscreen_res = pygame.display.get_desktop_sizes()[0]
+        self._screen = pygame.display.set_mode(self._window_res, self._flags | pygame.SCALED | pygame.FULLSCREEN, vsync=self._vsync)
+        self._scaled_fullscreen = True
+
+    def _exit_scaled_fullscreen(self):
+        self._screen = pygame.display.set_mode(self._window_res, self._flags, vsync=self._vsync)
+        self._scaled_fullscreen = False
+
     def _init_pygame(self):
         if self._dpi_aware:
             self._set_dpi_aware()
         pygame.init()
-        flags = pygame.DOUBLEBUF
+        self._flags = pygame.DOUBLEBUF
         if self._resizeable:
-            flags = flags | pygame.RESIZABLE
-        self._screen = pygame.display.set_mode(self._screen_size, flags, vsync=self._vsync)        
+            self._flags = self._flags | pygame.RESIZABLE
+        
+        self._screen = pygame.display.set_mode(self._window_res, self._flags, vsync=self._vsync)        
         if self._title is not None:
             pygame.display.set_caption(self._title)
+
+        #print('pygame.display.Info()', pygame.display.Info())
+        #print('pygame.display.get_driver()', pygame.display.get_driver())
+
         self._clock = pygame.time.Clock()
         self.get_ticks = pygame.time.get_ticks  
 
@@ -163,6 +189,13 @@ class App():
 
         self._shadow_surface = pygame.Surface((self.screen_width, self.screen_height)).convert()
         self.metrics_fps = 0
+
+    def _set_selected_control(self, control):
+        if self._selected_control is not None and self._selected_control!=control:
+            self._selected_control.selected = False
+        self._selected_control = control
+        if control is not None:            
+            control.selected = True
 
     def _dispatch_events(self):
         """ default engine's event dispatched that would also call
@@ -193,9 +226,11 @@ class App():
                 if is_doubleclick:
                     doubleclick_event = pygame.event.Event(self.EVENT_DOUBLECLICK, {"pos": mouse_pos, "button": event.button})                                        
                     pygame.event.post(doubleclick_event)                    
-                self._selected_control_old = self._selected_control
+
+                #self._selected_control_old = self._selected_control
+                selected_control = None
+
                 for ctr in [ctrl for ctrl in self._controls if ctrl._visible and not self._hide_gui]:
-                    #if event.button
                     drag_mode = ctr.drag_test(*mouse_pos)
                     if drag_mode is not None:
                         self._draged_controls += [(ctr, event.button, drag_mode)]
@@ -210,15 +245,16 @@ class App():
                                 ctr.doubleclicked(*mouse_pos, event.button, self)   
                             ctr.clicked(*mouse_pos, event.button, self)   
                         self._clicked_control = ctr
-                        if ctr._selectable:
-                            self._selected_control = ctr
-                        else:
-                            self._selected_control = None
 
-                if self._selected_control_old is not None and self._selected_control_old!=self._selected_control:
-                    self._selected_control_old.selected = False
-                if self._selected_control is not None:
-                    self._selected_control.selected = True
+                        if ctr._selectable:
+                            selected_control = ctr
+                        else:
+                            if ctr.layout.parent is not None:
+                                selected_control = ctr.layout.parent
+                            else:
+                                selected_control = None
+
+                self._set_selected_control( selected_control )
 
             elif event.type==pygame.MOUSEBUTTONUP:
                 if self._pushed_btn is not None:
@@ -237,6 +273,9 @@ class App():
                     if self._selected_control is not None:
                         self._selected_control.selected = False
                         self._selected_control = None
+                elif event.key==pygame.K_RETURN:
+                    if pygame.key.get_mods() & pygame.KMOD_ALT:
+                        self.toggle_scaled_fullscreen()
                 if self._selected_control is not None:
                     self._selected_control.key_pressed(event.key, self)
 
@@ -257,8 +296,8 @@ class App():
         """
         self._init_pygame()
 
-        if self._post_init_cb is not None:
-            self._post_init_cb()        
+        if self._on_init_cb is not None:
+            self._on_init_cb()        
         
         while self._is_running:
             when = timer()
@@ -313,6 +352,7 @@ class App():
             self._gif_rect = self.screen.get_rect()
         else:
             self._gif_rect = rect
+        self.resume_event(self._EVENT_CAPTURE_FRAME, millis=self._gif_frame_delay, once=False)
 
     def _capture_gif_frame(self):
         frame_no = getattr(self, '_frame_no', 1)
@@ -323,13 +363,13 @@ class App():
         pygame.image.save(cropped, os.path.join("anims", img_filename))
         
     def _savegif(filename, source_path="anims/image_*.png", frame_delay=75, loop=1):
+        from PIL import Image        
         #https://stackoverflow.com/questions/753190/programmatically-generate-video-or-animated-gif-in-python
         # save series of images to gif 
         # by Kris
         #https://stackoverflow.com/questions/64971675/pil-adding-text-to-a-gif-frames-adds-noise-to-the-picture
         # disable dithering 
-        # by fdermishin
-        from PIL import Image
+        # by fdermishin        
         img, *imgs=[Image.open(f).quantize(method=Image.MEDIANCUT) for f in sorted(glob.glob(source_path))]
         img.save(fp=filename, format='GIF', append_images=imgs,
                 save_all=True, duration=frame_delay, loop=loop)

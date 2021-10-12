@@ -3,8 +3,8 @@ import os
 os.environ['PYGAME_HIDE_SUPPORT_PROMPT'] = "hide"
 import math
 
-import pygame
 import numpy as np
+import pygame
 
 _pi = math.pi
 _pi_2 = math.pi * 2 
@@ -31,18 +31,50 @@ COLOR_FILE_VIEWER_FONT = (10, 10, 10)
 
 get_ticks = pygame.time.get_ticks
 
-def get_casting_point(self, wall):
+
+def cuteoh(sprite_surf, chunk_size=6):
+    subrects = []
+    rect = sprite_surf.get_bounding_rect()
+    h_subdivs = rect.width // chunk_size
+    v_subdivs = rect.height // chunk_size
+    cell_w = chunk_size
+    cell_h = chunk_size
+    for row in range(v_subdivs):
+        for col in range(h_subdivs):
+            x = col*cell_w
+            y = row*cell_h
+            ss = sprite_surf.subsurface((x, y, cell_w, cell_h))
+            s_rect = ss.get_bounding_rect()            
+            if not all(s_rect[2:]):
+                continue
+            subrects.append( (s_rect, (x, y), ss) )    
+    return subrects
+
+KERNEL_CACHE = {}
+
+# Ghost at #pygame-community
+def get_2d_blur_kernel(size, std_dev=0.1):
+    size = int(size)
+    if size not in KERNEL_CACHE:
+        # mmm delicious math
+        x_vals = [((i + 0.5) - size / 2) / (size / 2) for i in range(size)]
+        KERNEL_CACHE[size] = numpy.array([1 / math.sqrt(2*math.pi*std_dev)*math.exp(-0.5*x**2/std_dev) for x in x_vals])
+    return KERNEL_CACHE[size]
+
+# Ghost at #pygame-community
+def blur(array, kernel_size):
+    kernel = get_2d_blur_kernel(kernel_size)
+    # yoinked from https://stackoverflow.com/a/65804973
+    array = numpy.apply_along_axis(lambda x: numpy.convolve(x, kernel, mode='same'), 0, array)
+    array = numpy.apply_along_axis(lambda x: numpy.convolve(x, kernel, mode='same'), 1, array)
+    return array
+
+
+def get_casting_point(ln1, ln2):
     # the raycasting code by Emc2356
     # https://github.com/Emc2356/Visualizations/blob/main/RayCasting.py
-    x1 = wall.a.x
-    y1 = wall.a.y
-    x2 = wall.b.x
-    y2 = wall.b.y
-
-    x3 = self.pos.x
-    y3 = self.pos.y
-    x4 = self.pos.x + self.dir.x
-    y4 = self.pos.y + self.dir.y
+    [x1, y1], [x2, y2] = ln1
+    [x3, y3], [x4, y4] = ln2
 
     den = (x1 - x2) * (y3 - y4) - (y1 - y2) * (x3 - x4)
     if den == 0:  # line are parallel and they will never meet even if you stretch them out infinitely
@@ -57,6 +89,40 @@ def get_casting_point(self, wall):
         )
     else:
         return
+
+#dist
+#The first one is easy. If pos1 and pos2 are vectors, just subtract them
+
+#angle
+def measure_angle_vec(vec1, vec2):
+    return (vec2 - vec1).as_polar()[0]
+
+
+
+# def get_casting_point(self, wall):
+#     x1 = wall.a.x
+#     y1 = wall.a.y
+#     x2 = wall.b.x
+#     y2 = wall.b.y
+
+#     x3 = self.pos.x
+#     y3 = self.pos.y
+#     x4 = self.pos.x + self.dir.x
+#     y4 = self.pos.y + self.dir.y
+
+#     den = (x1 - x2) * (y3 - y4) - (y1 - y2) * (x3 - x4)
+#     if den == 0:  # line are parallel and they will never meet even if you stretch them out infinitely
+#         return
+
+#     t = ((x1 - x3) * (y3 - y4) - (y1 - y3) * (x3 - x4)) / den
+#     u = -((x1 - x2) * (y1 - y3) - (y1 - y2) * (x1 - x3)) / den
+#     if t > 0 and t < 1 and u > 0:
+#         return pygame.math.Vector2(
+#             x1 + t * (x2 - x1),
+#             y1 + t * (y2 - y1)
+#         )
+#     else:
+#         return
 
 # def intersect(line_1, line_2):
 #     x3, y3, x4, y4 = self.pos.x, self.pos.y, self.pos.x + self.dir.x, self.pos.y + self.dir.y
@@ -113,12 +179,6 @@ def project25dAlt(wx, wy, wz, win_width, win_height, worldScale = 1.0):
 def clip(val, n, m):
     return min(m, max(n, val))
 
-def to_pygame_y(y, screen_height=600):
-    return -y + screen_height
-
-def to_pymunk_y(y, screen_height=600):
-    return screen_height - y
-
 def measure_angle(x, y):
     return 180 - math.degrees( math.arctan2(x, y) )
 
@@ -131,6 +191,9 @@ def rotate(vector_length, angle):
     new_x = vector_length * math.cos(math.radians(angle))
     new_y = vector_length * math.sin(math.radians(angle))
     return (new_x, new_y)
+
+        # Angle = math.atan2(player.y-self.rect.y, player.x-self.rect.x)
+        # Angle = (math.cos(Angle) * self.speed, math.sin(Angle) * self.speed)    
 
 def pivot_rotation(surf, pivot_x, pivot_y, angle):
     """ rotate pygame surface surf along specified pivot
@@ -262,13 +325,39 @@ def flood_fill(surf, f_x, f_y, color):
             continue
 
         stack.append((x + 1, y))   # right
-        stack.append(( x - 1, y))  # left
-        stack.append(( x, y + 1))  # down
-        stack.append(( x, y - 1))  # up         
+        stack.append((x - 1, y))  # left
+        stack.append((x, y + 1))  # down
+        stack.append((x, y - 1))  # up         
 
+angle = 45
 def test():
-    pulse(5,15)      
+    
+    v= pygame.Vector2(10,0)
+    v.rotate_ip(angle)  
+    #rotate(10,angle)
 
 if __name__ == '__main__':
-    import timeit
-    print(timeit.timeit("test()", globals=globals(), number=100000))        
+    #import timeit
+    #print(timeit.timeit("test()", globals=globals(), number=100000))        
+    # print(get_casting_point([[0, 0], [50, 50]], [[50, 0], [0, 50]]))
+
+    # player_x = 40
+    # player_y = 50
+    # rect_x = 400
+    # rect_y = 300
+    # speed = 2
+
+    # angle = math.atan2(player_y-rect_y, player_x-rect_x)
+    
+    # move_x, move_y = (math.cos(angle) * speed, math.sin(angle) * speed) 
+
+    # print('angle:', angle, math.degrees(angle), move_x, move_y)
+
+    # #Angle = (math.cos(Angle) * self.speed, math.sin(Angle) * self.speed)   
+    angle = 45
+    v= pygame.Vector2(10,0).rotate(angle)
+    
+    print( v )
+    #print( type(v + (10, 10)))
+    #print( rotate(10,angle) )
+

@@ -3,10 +3,11 @@ import types
 import weakref
 
 import pygame
+from functools import lru_cache
 
 from draw_utils import *
 
-__all__ = ['BaseControl', 'Layout', 'GridCtrl', 'HorizontalLayout', 'VerticalLayout', 'ColorCell', 'Spacer', 'ToolPanel', 'StatusBar', 'VerticalLine', 'YesNoDialog',
+__all__ = ['BaseControl', 'Layout', 'DrawingBoard','MainMenu', 'HorizontalLayout', 'VerticalLayout', 'ColorCell', 'Spacer', 'ToolPanel', 'StatusBar', 'VerticalLine', 'YesNoDialog',
            'HorizontalLine', 'SliderCtrl', 'SpriteSheetCtrl', 'SpritePreview', 'Label', 'ButtonCtrl', 'SpriteSheet', 'FileDialog', 'ROI', 'TextEntry']
 
 def save_to_conf(f):
@@ -55,6 +56,10 @@ class Region():
         self._height = height        
         self._layout = None
         self._parent = None
+        self._layer = 1
+
+    def move_infront_of(self, region):
+        self._layer = region._layer + 1
 
     @property
     def right(self):
@@ -75,7 +80,7 @@ class Region():
 
     @property
     def y(self):
-        return self._y
+        return self._y    
 
     @property
     def x(self):
@@ -89,6 +94,10 @@ class Region():
     def y(self, value):
         self._y = value
 
+
+    @bottom.setter
+    def bottom(self, value):
+        self.y = value-self.width
     @property
     def height(self):
         return self._height
@@ -103,6 +112,16 @@ class Region():
     @property
     def centery(self):
         return self.y + self.height // 2
+
+
+
+    def show(self):
+        self._visible = True
+
+
+    def hide(self):
+        self._visible = False
+    
 
     @property
     def layout(self):
@@ -312,6 +331,7 @@ class Layout(Region):
         self._items = []
         self._index = 0  
         self._spacing = spacing
+        self._is_sorted = False
 
     @Region.height.setter
     def height(self, val):
@@ -332,17 +352,21 @@ class Layout(Region):
             raise ValueError("The item is already in the layout")
         if val.layout and val.layout is not self:
             val.layout.remove(val)
+        if self.parent is not None:
+            val._set_parent(self.parent)
+
         if self._y is None:
             self._y = val.y
         if self._x is None:
             self._x = val.x
-        self._items.append(val)        
+        self._items.append(val)
         val.layout = self
+        self._is_sorted = False
         return val
 
     def remove(self, val):
         self._items.remove(val)        
-        val.layout = None
+        val.layout = None        
         return val
 
     @property
@@ -370,7 +394,13 @@ class Layout(Region):
         self._iter = self._make_iter()
         return self    
 
-    def _make_iter(self):         
+    def _make_iter(self):
+        """ iterating over a layout only yields controls
+        """        
+        if not self._is_sorted:
+            self._items = sorted(self._items, key=lambda item: item._layer)
+            self._is_sorted = True
+
         for item in self._items:
             if isinstance(item, BaseControl):
                 if hasattr(item, "_controls"):
@@ -590,10 +620,11 @@ class HorizontalLayout(Layout):
             if self.height<item.height:
                 self.height = item.height
             
-class GridCtrl(BaseControl, BaseGrid):
+class DrawingBoard(BaseControl, BaseGrid):
     """ Display pixel grid for sprite editing """
     DRAW_GRID_AT_ZOOM = 5
     MAX_ZOOM = 32
+    COLOR_GRID_TINT = (33,32,29)
     def  __init__(self, size, color=COLOR_GRID, zoom=4, max_width=None, **kwargs):
         super().__init__(0, 0, 0, 0, color, cols=size[0], rows=size[1], **kwargs)
         
@@ -631,7 +662,7 @@ class GridCtrl(BaseControl, BaseGrid):
         self._rows = self._size[1]
 
     @makes_dirty
-    def blit(self, surf, where=(0,0)):
+    def set_image(self, surf, where=(0,0)):
         self._grid_image.blit(surf, where)
 
     @property
@@ -645,12 +676,12 @@ class GridCtrl(BaseControl, BaseGrid):
     def set_onion_skin(self, surf):
         self._onion_skin = surf
 
-    def cell_at_pos(self, x, y):
+    def cell_at_pos(self, x, y, boundry_checks=True):
         """ get col, row and specified position x, y
         """
         cell_col = (x - self._x) // self.cell_width
         cell_row = (y - self._y) // self.cell_height
-        if cell_col<0 or cell_row<0 or cell_col>(self._cols-1) or cell_row>(self._rows-1):
+        if boundry_checks and (cell_col<0 or cell_row<0 or cell_col>(self._cols-1) or cell_row>(self._rows-1)):
             return None
         return cell_col, cell_row
     
@@ -671,11 +702,11 @@ class GridCtrl(BaseControl, BaseGrid):
 
     @makes_dirty
     def line(self, x1, y1, x2, y2, color):
-        p1 = self.cell_at_pos(x1, y1)
-        p2 = self.cell_at_pos(x2, y2)
+        p1 = self.cell_at_pos(x1, y1, False)
+        p2 = self.cell_at_pos(x2, y2, False)
         if p1 is None or p2 is None:
             return None        
-        pygame.draw.line(self._grid_image, color,p1, p2)
+        pygame.draw.line(self._grid_image, color, p1, p2)
 
     @makes_dirty
     def set_grid_image(self, new_img):
@@ -686,6 +717,16 @@ class GridCtrl(BaseControl, BaseGrid):
     def grid_image(self):
         return self._grid_image
 
+    @lru_cache(maxsize=3)
+    def _make_grid_s(self, size):
+        grid_surf = pygame.Surface(size)
+        #grid_surf.fill(self.COLOR_WHITE)
+        s = pygame.PixelArray(grid_surf)                        
+        s[::self._zoom, 1::2] = self.COLOR_GRID_TINT
+        s[1::2, ::self._zoom] = self.COLOR_GRID_TINT
+        s.close()        
+        return grid_surf
+
     @makes_dirty
     def flood_fill_at_pos(self, x,y,value):        
         res = self.cell_at_pos(x, y)
@@ -694,10 +735,16 @@ class GridCtrl(BaseControl, BaseGrid):
         cell_col, cell_row = res
         flood_fill(self._grid_image, cell_col, cell_row, value)
 
+    @staticmethod
+    @lru_cache(maxsize=5)
+    def _new_image(size):        
+        res = pygame.Surface(size)
+        return res
+
     @property
     def image(self):
         if self._dirty:
-            self._image = pygame.Surface((self.width, self.height)).convert()
+            self._image = self._new_image((self.width, self.height))
 
             if self._onion_skin is not None:
                 new_im = self._grid_image.copy()
@@ -708,18 +755,13 @@ class GridCtrl(BaseControl, BaseGrid):
                 im.blit(new_im, (0,0), special_flags=0)
             else:
                 im = self._grid_image
-
-            pygame.transform.scale(im, (self.width, self.height), self._image)            
-                        
+            
+            pygame.transform.scale(im, (self.width, self.height), self._image)
+                 
             if self._zoom > self.DRAW_GRID_AT_ZOOM:
-                grid_surf = pygame.Surface((self.width, self.height)).convert()        
-                #grid_surf.fill(self.COLOR_WHITE)
-                s = pygame.PixelArray(grid_surf)                        
-                s[::self._zoom, 1::2] = (33,32,29)
-                s[1::2, ::self._zoom] = (33,32,29)
-                s.close()
+                grid_surf = self._make_grid_s( (self.width, self.height) )              
                 self._image.blit(grid_surf, (0,0),special_flags=pygame.BLEND_SUB)
-                #self._image.blit(grid_surf, (0,0),special_flags=pygame.BLEND_MAX)
+                #self._image.blit(grid_surf, (0,0),special_flags=pygame.BLEND_MAX)                      
 
             pygame.draw.rect(self._image, COLOR_GRID_CELL, (0, 0, self.width, self.height), width=1)
 
@@ -727,6 +769,7 @@ class GridCtrl(BaseControl, BaseGrid):
                 self._on_painted_cb(self._grid_image, self.app)
 
             self._dirty = False
+
         return self._image        
 
     @Region.width.getter
@@ -752,6 +795,105 @@ class GridCtrl(BaseControl, BaseGrid):
     
     def draw(self, surf):
         surf.blit(self.image, (self._x, self._y))                
+
+class MainMenu(BaseControl):
+    def  __init__(self, height=18, margin=5, spacing=0, color=COLOR_FOREGROUND, *args, **kwargs):
+        self._margin = margin
+        self._spacing = spacing
+        self._controls = HorizontalLayout(spacing=self._spacing)
+        self._controls._set_parent(self)
+        super().__init__(0, 0, 8, height, color, **kwargs)
+        self._drop_shadow = False
+        self._menus = {}
+        self._controls.x = self.x+margin
+        self._controls.y = self.y+margin
+        self._selected_menu = None
+        self._on_menu_item_cb = None
+        self._selectable = True
+
+    def on_menu_item(self, f_cb):
+        """ property to assign on when menu item is clicked or
+            pushed by keyboard callback 
+        """
+        self._on_menu_item_cb = types.MethodType(f_cb, self)
+    on_menu_item = property(fset=on_menu_item)
+
+    def _hide_items(self, menu):
+        for item_ctrl in menu["items"]:
+            item_ctrl.hide()        
+
+    def _show_items(self, menu):
+        for item_ctrl in menu["items"]:
+            item_ctrl.show()
+            
+    def _menu_item_click(self, *args, **kwargs):
+        menu = kwargs["menu"]
+        item_name = kwargs["item_name"]
+        if self._on_menu_item_cb is not None:
+            self._on_menu_item_cb(menu['name'], item_name, self.app)    
+
+    def _hide_invisible(self):
+        for c_menu in self._menus.values():
+            if c_menu is self._selected_menu:
+                self._show_items( c_menu )
+            else:
+                self._hide_items( c_menu )        
+    
+    def _menu_click(self, *args, **kwargs):
+        menu = kwargs["menu"]        
+        self._selected_menu = menu
+        self._hide_invisible()
+
+
+    @BaseControl.selected.setter
+    def selected(self, selected):
+        print(self, 'selected:', selected)
+        self._selected = selected
+        if not selected:
+            self._selected_menu = None
+            self._hide_invisible()
+
+    def add_menu_item(self, group_name, item_name):
+        menu = self._menus.get(group_name, None)
+        if menu is None:
+            menu = {}
+            menu["name"] = group_name
+            menu["layout"] = self._controls.add(VerticalLayout(spacing=5))
+            menu["label"] = menu["layout"].add( Label( menu["name"] ) )
+            menu["layout"].add( Spacer(5) )
+            menu["label"].on_click = lambda *args, **kwargs: self._menu_click(*args, **kwargs, menu=menu)
+            menu["items"] = []
+            self._menus[group_name] = menu
+        if item_name=="--":
+            menu_item = menu["layout"].add( HorizontalLine(menu["layout"].width, 1, mode=0) )
+        else:
+            menu_item = menu["layout"].add( Label(item_name) )
+        for ctrl in menu["items"]:
+            if isinstance(ctrl, HorizontalLine):
+                ctrl._width = menu["layout"].width
+        menu_item.on_click = lambda *args, **kwargs: self._menu_item_click(*args, **kwargs, menu=menu, item_name=item_name)
+        menu_item.hide()
+        menu["items"] += [menu_item]
+
+    def remove_menu_item(self, group_name, item_name):
+        pass
+        #return self._controls.remove( value )
+
+    @Region.width.getter
+    def width(self):
+        if self.app is not None:
+            return self.app.screen_width
+        return self._width
+
+    def draw(self, surf):
+        draw_panel(surf, self.x, self.y, self.width, self.height, self._color)        
+        for menu in self._menus.values():
+            if menu is self._selected_menu:
+                layout = menu["layout"]
+                draw_panel(surf, layout.x-4, layout.y+self.height, layout.width+4*2, layout.height-self.height, darker(COLOR_FOREGROUND, 0.1))
+                highlight = pygame.Surface((menu["label"].width, self.height-2))
+                highlight.fill((35,45,37))
+                surf.blit(highlight, (menu["label"].x, self.y+2), special_flags=pygame.BLEND_RGB_ADD)
 
 class ColorCell(BaseControl):
     def  __init__(self, width, height, color, *args, **kwargs):
@@ -1288,20 +1430,24 @@ class TextEntry(BaseControl):
     shifted_chars = {"1":"!", "2":"@", "3":"#", "4":"$", "5":"%", "6":"^", 
                      "7":"&","8":"*", "9":"(", "0":")", "-":"_", "[":"{", 
                      "]":"}", ",":"<", ".":">", "/":"?", "`":"~"}
-    def  __init__(self, width=120, color=COLOR_FOREGROUND, *args, **kwargs):
+    def  __init__(self, width=120, text="", color=COLOR_FOREGROUND, *args, **kwargs):
         self._border = 2
         self._controls = Layout()
         self._controls._set_parent(self)
         super().__init__(0, 0, width, 12, color,  *args, **kwargs)
         self._controls.x = self.x
         self._controls.y = self.y
-        self._lbl_text = self._controls.add( Label("hello, world", max_width=width, **kwargs) )
+        self._lbl_text = self._controls.add( Label(text, max_width=width, **kwargs) )
         self._lbl_text.x = self._border 
         self._lbl_text.y = self._border 
         self._height = self._lbl_text.height + self._border*2
         self._selectable = True
         self._editable = True
         self._drop_shadow = False
+
+    @property
+    def text(self):
+        return self._lbl_text.text
 
     def set_text(self, s):
         self._lbl_text.text = s
@@ -1322,9 +1468,8 @@ class TextEntry(BaseControl):
         
         if key_s in self.typable_chars:
             self._lbl_text.text = self._lbl_text.text + key_s
-
+        super().key_pressed(key, app)
     
-
     def draw(self, surf):
         draw_panel(surf, self._x, self._y, self.width, self.height, self._color, mode=3)
         if self._selected and (pygame.time.get_ticks()//350)%2:
@@ -1350,6 +1495,8 @@ class TextEntry(BaseControl):
         self._controls.x = val
 
 class SpritePreview(BaseControl):
+    """ Mini sprite preview used in the Editor 
+    """
     (
     TILE_MODE_NONE, 
     TILE_MODE_VERTICAL, 
@@ -1556,20 +1703,27 @@ class YesNoDialog(BaseControl):
         self._title_ctrl = self._controls.add(Label(self._title, shaded=True, max_width=self.width-10))
         self._title_ctrl.x = self.y + (self.width-self._title_ctrl.width)//2
         self._title_ctrl.y = self.y + 5        
-        self._btns_grid = self._controls.add(GridLayout(5, 1))
+        self._btns_grid = self._controls.add(HorizontalLayout(5, 1))
         self._btns_grid.y = self.y + self.height - 30          
         self._btns_grid.x = self.x + 45
 
-        self._yes_btn = self._btns_grid.add( ButtonCtrl("Yes", 60, 25), (0,0) )
-        self._yes_btn.on_click=self._btn_clicked
-        self._btns_grid.add(Spacer(45), (1,0))
-        self._no_btn = self._btns_grid.add( ButtonCtrl("No", 80, 25), (2, 0) )
-        self._no_btn.on_click=self._btn_clicked
-        self._btns_grid.add(Spacer(45), (3,0))
         self._flags = flags
+
+        if self._flags & self.HAS_IDK:
+            btns_space = (400-65*3) // 3
+        else:
+            btns_space = (400-65*2) // 2
+
+        self._yes_btn = self._btns_grid.add( ButtonCtrl("Yes", 60, 25) )
+        self._yes_btn.on_click=self._btn_clicked
+        self._btns_grid.add(Spacer(btns_space))
+        self._no_btn = self._btns_grid.add( ButtonCtrl("No", 80, 25))
+        self._no_btn.on_click=self._btn_clicked
+        self._btns_grid.add(Spacer(btns_space))
+        
         self._result = None
         if self._flags & self.HAS_IDK:
-            self._idk_btn = self._btns_grid.add( ButtonCtrl("idk", 80, 25), (4, 0) )      
+            self._idk_btn = self._btns_grid.add( ButtonCtrl("idk", 80, 25) )      
             self._idk_btn.on_click=self._btn_clicked
 
         self._text_layout = self._controls.add(VerticalLayout())
@@ -1581,15 +1735,15 @@ class YesNoDialog(BaseControl):
 
     def _btn_clicked(self, ctrl, x, y, mouse_button, app):
         if ctrl is self._yes_btn:
-            self._result = RESULT_YES
+            self._result = self.RESULT_YES
         elif ctrl is self._no_btn:
-            self._result = RESULT_NO
+            self._result = self.RESULT_NO
         elif ctrl is self._idk_btn:
-            self._result = RESULT_IDK
+            self._result = self.RESULT_IDK
         if mouse_button==pygame.BUTTON_LEFT:
             self._visible=False
             if self._on_result_cb is not None:                
-                self._on_result_cb(app, self._selected_label.text if self._selected_label is not None else None)        
+                self._on_result_cb(self._result, app)
 
     def _render_memo(self):
         text_color = self._text_color
@@ -1679,7 +1833,7 @@ class ToolPanel(BaseControl):
 class StatusBar(BaseControl):
     def  __init__(self, height=24, margin=5, spacing=0, color=COLOR_FOREGROUND, mode=0, *args, **kwargs):        
         self._controls = HorizontalLayout(spacing=spacing)
-        self._controls._set_parent = self              
+        self._controls._set_parent( self )
         self._margin = margin
         super().__init__(0, 0, 8, height, color, **kwargs)
         self._drop_shadow = False
@@ -1905,6 +2059,9 @@ class Label(BaseControl):
     def draw(self, surface):
         if self._dirty:
             self._render_string()
+            if self.layout is not None:
+                self.layout._re_align()
+
             self._dirty = False
         if self._shaded:
             surface.blit(self._shaded_image, (self.x+1, self.y-1) )   
